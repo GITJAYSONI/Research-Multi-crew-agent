@@ -1,31 +1,32 @@
 import json
+import sys
 import time
 from html import escape
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
-import os
-import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
 
 try:
     from chat_service import ResearchChatService
     from database.database import ResearchDatabase
     from memory import SessionMemory, repair_messages
 except ImportError as exc:
-    st.error(f"Could not import pipeline modules: {exc}")
+    st.error(f"Could not import application modules: {exc}")
     st.stop()
 
 
-PAGE_TITLE = "Multi-Agent Research System"
+PAGE_TITLE = "Research Intelligence System"
 LOCAL_USER_EMAIL = "local-user@research-app.local"
 
 
 def configure_page() -> None:
     st.set_page_config(
         page_title=PAGE_TITLE,
-        page_icon="🔬",
+        page_icon="R",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
@@ -42,51 +43,73 @@ html, body, [class*="css"] {
 }
 .stApp {
     background:
-        radial-gradient(circle at 20% 10%, rgba(34, 211, 238, .14), transparent 28rem),
+        radial-gradient(circle at 18% 10%, rgba(34, 211, 238, .15), transparent 28rem),
+        radial-gradient(circle at 90% 8%, rgba(99, 102, 241, .16), transparent 26rem),
         linear-gradient(135deg, #0b1020 0%, #111827 54%, #0f172a 100%);
 }
-.hero {
-    padding: 1.5rem 0 1rem;
+.block-container {
+    padding-top: 1.1rem;
+    padding-bottom: 2rem;
 }
-.hero h1 {
-    font-size: clamp(2.1rem, 5vw, 4.3rem);
+.app-title {
+    margin-bottom: 1rem;
+}
+.app-title h1 {
+    font-size: clamp(1.8rem, 4vw, 3.6rem);
     line-height: 1;
     margin: 0;
 }
-.hero p {
-    max-width: 58rem;
+.app-title p {
+    max-width: 48rem;
     color: #a5b4fc;
-    font-size: 1rem;
+    font-size: .95rem;
+    margin-top: .55rem;
 }
-.agent-card {
-    border: 1px solid rgba(148, 163, 184, .24);
-    background: rgba(15, 23, 42, .72);
+.panel {
+    border: 1px solid rgba(148, 163, 184, .22);
+    background: rgba(15, 23, 42, .62);
     border-radius: 8px;
-    padding: 1rem;
-    margin-bottom: .8rem;
+    padding: .9rem;
 }
-.agent-card strong {
-    color: #67e8f9;
+.metric-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .55rem;
+    margin: .7rem 0 1rem;
 }
-.score-good {
-    color: #86efac;
-    font-weight: 800;
+.metric {
+    border: 1px solid rgba(148, 163, 184, .18);
+    background: rgba(2, 6, 23, .42);
+    border-radius: 8px;
+    padding: .7rem;
 }
-.score-warn {
-    color: #facc15;
-    font-weight: 800;
+.metric span {
+    display: block;
+    color: #94a3b8;
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+}
+.metric strong {
+    display: block;
+    color: #e0f2fe;
+    font-size: 1.1rem;
+    margin-top: .2rem;
+}
+.thread-button {
+    width: 100%;
 }
 .source-box {
     border-left: 3px solid #38bdf8;
     padding-left: .75rem;
     margin-bottom: .9rem;
 }
-.trust-pill {
+.trust-pill, .claim-pill {
     display: inline-block;
     border: 1px solid rgba(148, 163, 184, .35);
     border-radius: 999px;
     padding: .12rem .55rem;
-    margin: .25rem 0 .45rem;
+    margin: .25rem .25rem .45rem 0;
     font-size: .8rem;
     color: #bfdbfe;
 }
@@ -97,6 +120,25 @@ html, body, [class*="css"] {
     border-radius: 8px;
     padding: .7rem;
     margin: .35rem 0;
+}
+.agent-card {
+    border: 1px solid rgba(148, 163, 184, .24);
+    background: rgba(15, 23, 42, .72);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: .8rem;
+}
+.empty-chat {
+    border: 1px dashed rgba(148, 163, 184, .32);
+    border-radius: 8px;
+    padding: 1.2rem;
+    color: #cbd5e1;
+    background: rgba(15, 23, 42, .4);
+}
+div[data-testid="stChatMessage"] {
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, .14);
+    background: rgba(15, 23, 42, .34);
 }
 </style>
 """,
@@ -109,7 +151,6 @@ def init_state() -> None:
         "state": None,
         "running": False,
         "last_error": "",
-        "last_topic": "",
         "current_thread_id": None,
         "current_user_id": None,
         "show_history": True,
@@ -127,8 +168,7 @@ def init_state() -> None:
 
 @st.cache_resource
 def get_database() -> ResearchDatabase:
-    import os
-    db_path = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')), 'database', 'research_memory.db')
+    db_path = ROOT_DIR / "database" / "research_memory.db"
     return ResearchDatabase(db_path)
 
 
@@ -145,71 +185,74 @@ def parse_json(value: Any, fallback: Any) -> Any:
         return fallback
 
 
-def render_header() -> None:
+def render_title() -> None:
     st.markdown(
         """
-<div class="hero">
-  <p style="color: red; font-weight: bold; font-family: monospace; letter-spacing: 0.18em; text-transform: uppercase;">Jai Shree Ram</p>
+<div class="app-title">
   <h1>Research Intelligence System</h1>
-  <p>Search, scrape, structure, write, and evaluate with transparent agent outputs and source-grounded quality scoring.</p>
+  <p>Ask a question, inspect the sources, and verify how strongly the answer is supported.</p>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
 
-def run_pipeline(topic: str) -> None:
-    st.session_state.running = True
-    st.session_state.last_error = ""
-    st.session_state.last_topic = topic
-
-    try:
-        with st.spinner("Agents are working through search, scrape, evidence, writing, and quality checks..."):
-            service = get_chat_service()
-            result = service.ask(
-                topic,
-                thread_id=st.session_state.current_thread_id,
-                user_id=st.session_state.current_user_id,
-            )
-            if result.get("error"):
-                st.session_state.last_error = result["error"]
-            else:
-                st.session_state.state = result
-                st.session_state.current_thread_id = result.get("thread_id")
-    except Exception as exc:
-        st.session_state.last_error = str(exc)
-    finally:
-        st.session_state.running = False
-
-
 def start_new_thread() -> None:
     st.session_state.current_thread_id = None
     st.session_state.state = None
-    st.session_state.last_topic = ""
     st.session_state.last_error = ""
     st.session_state.memory = SessionMemory(max_recent_messages=4)
 
 
 def load_thread(thread_id: int) -> None:
     db = get_database()
-    if not db.thread_belongs_to_user(thread_id, st.session_state.current_user_id):
+    user_id = st.session_state.current_user_id
+    if not db.thread_belongs_to_user(thread_id, user_id):
         st.session_state.last_error = "This thread does not belong to the current user."
         return
 
-    messages = db.load_messages(thread_id)
     st.session_state.current_thread_id = thread_id
-    st.session_state.memory = SessionMemory(max_recent_messages=4)
-    st.session_state.memory.load_messages(repair_messages(messages))
     st.session_state.state = None
-    st.session_state.last_topic = ""
     st.session_state.last_error = ""
+    st.session_state.memory = SessionMemory(max_recent_messages=4)
+    st.session_state.memory.load_messages(repair_messages(db.load_messages(thread_id)))
+
+
+def run_research(prompt: str) -> None:
+    st.session_state.running = True
+    st.session_state.last_error = ""
+
+    try:
+        with st.status("Research agents are working...", expanded=True) as status:
+            st.write("Searching for sources")
+            st.write("Scraping and cleaning source text")
+            st.write("Building evidence and source cards")
+            st.write("Writing and verifying the answer")
+
+            result = get_chat_service().ask(
+                prompt,
+                thread_id=st.session_state.current_thread_id,
+                user_id=st.session_state.current_user_id,
+            )
+            if result.get("error"):
+                st.session_state.last_error = result["error"]
+                status.update(label="Research failed", state="error", expanded=True)
+            else:
+                st.session_state.state = result
+                st.session_state.current_thread_id = result.get("thread_id")
+                status.update(label="Research complete", state="complete", expanded=False)
+    except Exception as exc:
+        st.session_state.last_error = str(exc)
+    finally:
+        st.session_state.running = False
 
 
 def render_history_panel() -> None:
-    header_cols = st.columns([1, 1])
-    with header_cols[0]:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    top_left, top_right = st.columns([1.2, .8])
+    with top_left:
         st.subheader("History")
-    with header_cols[1]:
+    with top_right:
         if st.button("Hide", use_container_width=True, key="hide_history_btn"):
             st.session_state.show_history = False
 
@@ -219,78 +262,76 @@ def render_history_panel() -> None:
     threads = get_database().list_threads(st.session_state.current_user_id)
     if not threads:
         st.caption("No saved conversations yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    for thread in threads[:30]:
+    for thread in threads[:35]:
         thread_id = int(thread["id"])
-        is_active = thread_id == st.session_state.current_thread_id
-        label = f"{'● ' if is_active else ''}{thread.get('title') or 'Untitled'}"
-        if st.button(label[:80], key=f"thread_{thread_id}", use_container_width=True):
+        active = thread_id == st.session_state.current_thread_id
+        title = thread.get("title") or "Untitled"
+        label = f"{'* ' if active else ''}{title[:64]}"
+        if st.button(label, key=f"thread_{thread_id}", use_container_width=True):
             load_thread(thread_id)
 
+    st.markdown("</div>", unsafe_allow_html=True)
 
-def render_sidebar() -> None:
+
+def render_control_panel() -> None:
     if not st.session_state.show_history:
         if st.button("Show History", use_container_width=True, key="show_history_btn"):
             st.session_state.show_history = True
 
-    st.subheader("Research Topic")
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.subheader("Session")
     if st.session_state.current_thread_id:
-        st.caption(f"Continuing thread #{st.session_state.current_thread_id}")
+        st.caption(f"Thread #{st.session_state.current_thread_id}")
     else:
         st.caption("New conversation")
 
-    with st.form("research_form", clear_on_submit=False):
-        topic = st.text_input(
-            "Research topic",
-            value=st.session_state.last_topic,
-            placeholder="e.g. Latest advances in quantum computing",
-            label_visibility="collapsed",
-        )
-        submitted = st.form_submit_button(
-            "Run Research Pipeline",
-            disabled=st.session_state.running,
-            use_container_width=True,
-        )
+    state = st.session_state.state or {}
+    feedback = parse_json(state.get("feedback", "{}"), {})
+    score = feedback.get("score", state.get("final_score", "-"))
+    confidence = feedback.get("confidence", "-")
+    sources_count = len(state.get("source_cards", []))
 
-    if submitted:
-        cleaned_topic = topic.strip()
-        if cleaned_topic:
-            run_pipeline(cleaned_topic)
-        else:
-            st.warning("Please enter a research topic first.")
+    st.markdown(
+        f"""
+<div class="metric-row">
+  <div class="metric"><span>Score</span><strong>{score}/10</strong></div>
+  <div class="metric"><span>Confidence</span><strong>{escape(str(confidence))}</strong></div>
+  <div class="metric"><span>Sources</span><strong>{sources_count}</strong></div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
-    st.subheader("Pipeline")
+    st.caption("Pipeline")
     st.markdown(
         """
-1. Search Agent: finds candidate sources
-2. Scraper Agent: extracts page text
-3. Reader Agent: structures source evidence
-4. Writer Agent: creates the cited report
-5. Critic Agent: scores quality transparently
+1. Search
+2. Scrape
+3. Evidence
+4. Write
+5. Verify
 """
     )
 
     if st.session_state.last_error:
         st.error(st.session_state.last_error)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_score(feedback: dict, state: dict) -> None:
-    score = int(feedback.get("score", state.get("final_score", 0)) or 0)
-    score_class = "score-good" if score >= 8 else "score-warn"
+def render_chat_feed() -> None:
+    messages = st.session_state.memory.messages
+    if not messages:
+        return
 
-    st.markdown(
-        f'<p class="{score_class}">Quality Score: {score}/10</p>',
-        unsafe_allow_html=True,
-    )
-    st.caption(feedback.get("final_verdict", "No critic verdict recorded."))
-    st.info(
-        feedback.get(
-            "score_meaning",
-            "The score is a quality signal, not a guarantee of factual truth.",
-        )
-    )
-    st.caption(f"Confidence: {feedback.get('confidence', 'unknown')}")
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        avatar = "assistant" if role == "assistant" else "user"
+        with st.chat_message(role, avatar=avatar):
+            st.markdown(content)
 
 
 def render_report_tab(state: dict) -> None:
@@ -302,28 +343,8 @@ def render_report_tab(state: dict) -> None:
         file_name=f"research_report_{int(time.time())}.md",
         mime="text/markdown",
         use_container_width=True,
-        key=f"download_report_{state.get('topic', 'untitled')}_{state.get('final_score', 0)}",
+        key=f"download_report_{state.get('thread_id', 'new')}_{state.get('final_score', 0)}",
     )
-
-
-def render_agents_tab(state: dict) -> None:
-    for index, item in enumerate(state.get("agent_outputs", []), 1):
-        output = item.get("output", "")
-        if not isinstance(output, str):
-            output = json.dumps(output, indent=2)
-
-        with st.expander(f"{item.get('agent')} - {item.get('status')}"):
-            st.markdown(
-                f"""
-<div class="agent-card">
-  <strong>{escape(item.get('summary', ''))}</strong><br>
-  <span>{escape(item.get('timestamp', ''))}</span>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-            language = "json" if output.strip().startswith(("{", "[")) else None
-            st.code(output[:8000], language=language)
 
 
 def render_sources_tab(state: dict) -> None:
@@ -346,7 +367,7 @@ def render_sources_tab(state: dict) -> None:
             unsafe_allow_html=True,
         )
 
-        with st.expander(f"Exact snippets from source [{source_id}]"):
+        with st.expander(f"Snippets and claims from source [{source_id}]"):
             for snippet in card.get("exact_snippets", []):
                 st.markdown(f'<div class="snippet">{escape(snippet)}</div>', unsafe_allow_html=True)
 
@@ -356,79 +377,106 @@ def render_sources_tab(state: dict) -> None:
 
             used_claims = card.get("used_for_claims", [])
             if used_claims:
-                st.markdown("Claims that used this source:")
                 st.json(used_claims)
             else:
                 st.caption("No verified report claims used this source yet.")
 
 
 def render_evidence_tab(state: dict, feedback: dict) -> None:
-    st.json(state.get("extracted_data", []))
-
     support_audit = feedback.get("claim_support_audit", {})
     if support_audit:
-        st.subheader("Claim Support Audit")
         st.write(
             f"Supported cited claims: {support_audit.get('supported_claim_count', 0)} "
             f"of {support_audit.get('checked_claim_count', 0)} "
             f"({support_audit.get('support_rate', 0)})"
         )
         st.caption(support_audit.get("method_limit", ""))
-
         weak_claims = support_audit.get("weak_claims", [])
         if weak_claims:
-            st.warning("Weakly supported cited claims found:")
+            st.warning("Weak or unclear claims found:")
             st.json(weak_claims)
 
-    with st.expander("Critic Details"):
+    with st.expander("Structured evidence"):
+        st.json(state.get("extracted_data", []))
+
+    with st.expander("Critic details"):
         st.json(feedback)
 
 
-def render_results() -> None:
-    st.subheader("Results")
-    state = st.session_state.state
+def render_agents_tab(state: dict) -> None:
+    for item in state.get("agent_outputs", []):
+        output = item.get("output", "")
+        if not isinstance(output, str):
+            output = json.dumps(output, indent=2)
 
+        with st.expander(f"{item.get('agent')} - {item.get('status')}"):
+            st.markdown(
+                f"""
+<div class="agent-card">
+  <strong>{escape(item.get('summary', ''))}</strong><br>
+  <span>{escape(item.get('timestamp', ''))}</span>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+            language = "json" if output.strip().startswith(("{", "[")) else None
+            st.code(output[:8000], language=language)
+
+
+def render_research_details() -> None:
+    state = st.session_state.state
     if not state:
-        st.info("Enter a topic and run the pipeline to generate a report.")
         return
 
     feedback = parse_json(state.get("feedback", "{}"), {})
-    render_score(feedback, state)
-
-    tab_report, tab_agents, tab_sources, tab_evidence = st.tabs(
-        ["Final Report", "Agent Outputs", "Sources", "Evidence"]
+    tab_answer, tab_sources, tab_evidence, tab_agents = st.tabs(
+        ["Answer", "Sources", "Verification", "Agents"]
     )
 
-    with tab_report:
+    with tab_answer:
         render_report_tab(state)
-    with tab_agents:
-        render_agents_tab(state)
     with tab_sources:
         render_sources_tab(state)
     with tab_evidence:
         render_evidence_tab(state, feedback)
+    with tab_agents:
+        render_agents_tab(state)
+
+
+def render_main_area() -> None:
+    render_title()
+    render_chat_feed()
+
+    prompt = st.chat_input(
+        "Ask a research question...",
+        disabled=st.session_state.running,
+    )
+    if prompt and prompt.strip():
+        run_research(prompt.strip())
+        st.rerun()
+
+    render_research_details()
 
 
 def main() -> None:
     configure_page()
     inject_styles()
     init_state()
-    render_header()
 
     if st.session_state.show_history:
-        history, main_left, main_right = st.columns([0.75, 0.95, 1.65], gap="large")
+        history, controls, main_col = st.columns([0.78, 0.9, 2.4], gap="large")
         with history:
             render_history_panel()
-        with main_left:
-            render_sidebar()
-        with main_right:
-            render_results()
+        with controls:
+            render_control_panel()
+        with main_col:
+            render_main_area()
     else:
-        left, right = st.columns([0.95, 1.65], gap="large")
-        with left:
-            render_sidebar()
-        with right:
-            render_results()
+        controls, main_col = st.columns([0.9, 2.6], gap="large")
+        with controls:
+            render_control_panel()
+        with main_col:
+            render_main_area()
 
 
 if __name__ == "__main__":

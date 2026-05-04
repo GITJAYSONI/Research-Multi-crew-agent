@@ -11,3 +11,4 @@ __pycache__/
 research_report_*.md
 research_memory.db
 research_memory.db-*
+memory_integration_example.py

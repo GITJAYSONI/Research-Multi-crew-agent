@@ -1,4 +1,3 @@
-import json
 from copy import deepcopy
 
 from agents import memory_summary_chain
@@ -6,6 +5,24 @@ from cache_store import cache
 from database.database import ResearchDatabase
 from memory import SessionMemory, repair_messages
 from pipeline import run_research_pipeline
+from utils import parse_json_safe
+
+
+EMPTY_RESPONSE_REPORT = (
+    "Research answer\n\n"
+    "Executive Summary\n"
+    "Data unavailable.\n\n"
+    "Key Findings\n"
+    "- Data unavailable.\n\n"
+    "Deep Analysis\n"
+    "Data unavailable.\n\n"
+    "Evidence & Sources\n"
+    "No usable sources were available. Source Unverified.\n\n"
+    "Limitations / Data Gaps\n"
+    "Data unavailable.\n\n"
+    "Conclusion\n"
+    "Data unavailable."
+)
 
 
 def summarize_memory(existing_summary: str, older_messages: str) -> str:
@@ -14,10 +31,19 @@ def summarize_memory(existing_summary: str, older_messages: str) -> str:
         "summary": existing_summary,
         "messages": older_messages,
     }
+    
+    def _invoke_summary():
+        try:
+            return memory_summary_chain.invoke(cache_payload)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Memory summarization failed: %s", exc)
+            return existing_summary
+
     return cache.get_or_set(
         "memory_summary",
         cache_payload,
-        lambda: memory_summary_chain.invoke(cache_payload),
+        _invoke_summary,
         ttl_seconds=24 * 3600,
     )
 
@@ -49,6 +75,7 @@ class ResearchChatService:
         user_input: str,
         thread_id: int | None = None,
         user_id: int | None = None,
+        mode: str = "discover",
     ) -> dict:
         if user_id is None:
             return {
@@ -78,6 +105,7 @@ class ResearchChatService:
             "thread_summary": self.memory.summary,
             "recent_messages": self.memory.trim_history(),
             "user_input": user_input,
+            "mode": mode,
         }
 
         # Search should use the user's current query, not the full conversation
@@ -88,18 +116,32 @@ class ResearchChatService:
             lambda: run_research_pipeline(
                 topic=user_input,
                 conversation_context=answer_context,
+                mode=mode,
+                chat_history=self.memory.messages,
             ),
             ttl_seconds=6 * 3600,
         ))
 
-        assistant_response = result.get("report", "")
+        assistant_response = (result.get("report") or result.get("final_answer") or "").strip()
+        if not assistant_response:
+            assistant_response = EMPTY_RESPONSE_REPORT
+            result.setdefault("errors", []).append(
+                {
+                    "agent": "ResearchChatService",
+                    "error": "Pipeline returned no report or final_answer.",
+                }
+            )
+            result["quality_warning"] = True
+        result["report"] = assistant_response
+        result["final_answer"] = assistant_response
+
         self.memory.add_message("assistant", assistant_response)
         self.memory.update_summary(summarize_memory)
 
         self.db.save_message(thread_id, "assistant", assistant_response)
         self.db.save_sources(thread_id, result.get("source_cards", []))
 
-        feedback = _parse_feedback(result.get("feedback", "{}"))
+        feedback = parse_json_safe(result.get("feedback", "{}"))
         report_id = self.db.save_report(
             thread_id=thread_id,
             final_answer=assistant_response,
@@ -114,12 +156,3 @@ class ResearchChatService:
         result["memory_summary"] = self.memory.summary
         result["context_sent_to_pipeline"] = answer_context
         return result
-
-
-def _parse_feedback(value: str | dict) -> dict:
-    if isinstance(value, dict):
-        return value
-    try:
-        return json.loads(value)
-    except Exception:
-        return {}

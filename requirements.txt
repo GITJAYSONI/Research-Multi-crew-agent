@@ -4,11 +4,13 @@ streamlit>=1.30.0
 # LLM
 langchain-core>=0.2.0
 langchain-mistralai>=0.1.0
+langgraph>=0.2.0
 
 # Search and scraping
 tavily-python>=0.3.0
 aiohttp>=3.9.0
 beautifulsoup4>=4.12.0
+playwright>=1.43.0
 
 # Configuration
 python-dotenv>=1.0.0

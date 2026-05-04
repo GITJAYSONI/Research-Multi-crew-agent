@@ -2,6 +2,7 @@ import re
 from urllib.parse import urlparse
 
 from text_utils import split_sentences, tokens
+from tools import TRUSTED_DOMAIN_PARTS, validate_url
 
 
 def domain(url: str) -> str:
@@ -19,29 +20,9 @@ def trust_score(url: str, title: str = "") -> dict:
     if source_domain.endswith((".gov", ".edu")):
         score += 0.3
         reasons.append("government or education domain")
-    if any(
-        term in source_domain
-        for term in ("docs.", "developer.", "support.", "research.", "who.int", "worldbank.org")
-    ):
-        score += 0.25
-        reasons.append("official or research-oriented domain")
-    if any(
-        term in source_domain
-        for term in (
-            "nature.com",
-            "science.org",
-            "arxiv.org",
-            "ieee.org",
-            "acm.org",
-            "reuters.com",
-            "apnews.com",
-            "bbc.com",
-            "nytimes.com",
-            "theguardian.com",
-        )
-    ):
+    if any(part in source_domain for part in TRUSTED_DOMAIN_PARTS):
         score += 0.2
-        reasons.append("recognized publisher or research source")
+        reasons.append("recognized publisher or research domain")
     if "blog" in source_domain or "medium.com" in source_domain:
         score -= 0.1
         reasons.append("blog-style source")
@@ -92,8 +73,10 @@ def build_reader_output(sources: list[dict], scraped_content: str) -> list[dict]
     chunks = re.split(r"\n(?=Source: )", scraped_content or "")
 
     for index, source in enumerate(sources, 1):
-        url = source.get("url", "")
-        matching_chunk = next((chunk for chunk in chunks if url and url in chunk), "")
+        raw_url = source.get("url", "")
+        safe_url = raw_url if raw_url.startswith("http") else f"https://{raw_url.lstrip('/')}"
+        url = safe_url
+        matching_chunk = matching_scraped_chunk(url, chunks)
         content = matching_chunk or source.get("summary", "")
         clean_content = re.sub(r"\s+", " ", content).strip()
 
@@ -121,6 +104,27 @@ def build_reader_output(sources: list[dict], scraped_content: str) -> list[dict]
         )
 
     return extracted
+
+
+def matching_scraped_chunk(url: str, chunks: list[str]) -> str:
+    """Match by full source/original URL instead of shortened display text."""
+    if not url:
+        return ""
+
+    normalized = url.rstrip("/")
+    for chunk in chunks:
+        source_url = extract_chunk_field(chunk, "Source")
+        original_url = extract_chunk_field(chunk, "Original URL")
+        candidates = {source_url.rstrip("/"), original_url.rstrip("/")}
+        if normalized in candidates:
+            return chunk
+
+    return next((chunk for chunk in chunks if normalized and normalized in chunk), "")
+
+
+def extract_chunk_field(chunk: str, field_name: str) -> str:
+    match = re.search(rf"(?m)^{re.escape(field_name)}:\s*(.+)$", chunk or "")
+    return match.group(1).strip() if match else ""
 
 
 def format_evidence_for_writer(extracted_data: list[dict]) -> str:
@@ -156,19 +160,32 @@ def build_source_cards(extracted_data: list[dict], claim_audit: dict | None = No
                     }
                 )
 
-    return [
-        {
-            "source_id": item["source_id"],
-            "title": item.get("title", "Untitled source"),
-            "url": item.get("url", ""),
-            "publisher": item.get("publisher", "unknown"),
-            "trust_score": item.get("trust_score", 0),
-            "trust_label": item.get("trust_label", "unknown"),
-            "trust_reasons": item.get("trust_reasons", []),
-            "summary": item.get("key_points", [""])[0] if item.get("key_points") else "",
-            "exact_snippets": item.get("snippets", []),
-            "content_available": item.get("content_available", False),
-            "used_for_claims": claims_by_source.get(item["source_id"], []),
-        }
-        for item in extracted_data
-    ]
+    cards = []
+    for item in extracted_data:
+        url = item.get("url", "")
+        normalized_url = url if url.startswith("http") else f"https://{url.lstrip('/')}"
+        format_valid = validate_url(normalized_url)
+        validation_note = (
+            "Source Unverified: URL format passed local checks, but live HTTP status was not verified."
+            if format_valid
+            else "Source Unverified: URL is missing or malformed; live HTTP status was not verified."
+        )
+        cards.append(
+            {
+                "source_id": item["source_id"],
+                "title": item.get("title", "Untitled source"),
+                "url": normalized_url if format_valid else url,
+                "publisher": item.get("publisher", "unknown"),
+                "trust_score": item.get("trust_score", 0),
+                "trust_label": item.get("trust_label", "unknown"),
+                "trust_reasons": item.get("trust_reasons", []),
+                "url_format_valid": format_valid,
+                "validation_status": "Source Unverified",
+                "validation_note": validation_note,
+                "summary": item.get("key_points", [""])[0] if item.get("key_points") else "",
+                "exact_snippets": item.get("snippets", []),
+                "content_available": item.get("content_available", False),
+                "used_for_claims": claims_by_source.get(item["source_id"], []),
+            }
+        )
+    return cards

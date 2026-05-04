@@ -1,7 +1,10 @@
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchDatabase:
@@ -33,7 +36,6 @@ class ResearchDatabase:
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         email TEXT UNIQUE,
-                        password_hash TEXT,
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
                     );
 
@@ -86,6 +88,8 @@ class ResearchDatabase:
                         FOREIGN KEY (report_id) REFERENCES reports(id)
                     );
 
+                    PRAGMA journal_mode=WAL;
+
                     CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id);
                     CREATE INDEX IF NOT EXISTS idx_threads_user_id ON threads(user_id);
                     CREATE INDEX IF NOT EXISTS idx_sources_thread_id ON sources(thread_id);
@@ -94,21 +98,21 @@ class ResearchDatabase:
                     """
                 )
         except sqlite3.Error as exc:
-            print(f"Database initialization failed: {exc}")
+            logger.error("Database initialization failed: %s", exc)
 
-    def create_user(self, email: str, password_hash: str = "") -> int | None:
+    def create_user(self, email: str) -> int | None:
         try:
             with self.connect() as db:
                 cursor = db.execute(
-                    "INSERT OR IGNORE INTO users (email, password_hash) VALUES (?, ?)",
-                    (email, password_hash),
+                    "INSERT OR IGNORE INTO users (email) VALUES (?)",
+                    (email,),
                 )
                 if cursor.lastrowid:
                     return int(cursor.lastrowid)
                 row = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
                 return int(row["id"]) if row else None
         except sqlite3.Error as exc:
-            print(f"Could not create user: {exc}")
+            logger.error("Could not create user: %s", exc)
             return None
 
     def create_thread(self, user_id: int, title: str) -> int | None:
@@ -120,30 +124,26 @@ class ResearchDatabase:
                 )
                 return int(cursor.lastrowid)
         except sqlite3.Error as exc:
-            print(f"Could not create thread: {exc}")
+            logger.error("Could not create thread: %s", exc)
             return None
 
-    def touch_thread(self, thread_id: int) -> None:
-        try:
-            with self.connect() as db:
-                db.execute(
-                    "UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (thread_id,),
-                )
-        except sqlite3.Error as exc:
-            print(f"Could not update thread timestamp: {exc}")
-
     def save_message(self, thread_id: int, role: str, content: str) -> bool:
+        if not (content or "").strip():
+            logger.error("Refusing to save empty %s message for thread %s", role, thread_id)
+            return False
         try:
             with self.connect() as db:
                 db.execute(
                     "INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)",
                     (thread_id, role, content),
                 )
-            self.touch_thread(thread_id)
+                db.execute(
+                    "UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (thread_id,),
+                )
             return True
         except sqlite3.Error as exc:
-            print(f"Could not save message: {exc}")
+            logger.error("Could not save message: %s", exc)
             return False
 
     def load_messages(self, thread_id: int, limit: int = 50) -> list[dict[str, str]]:
@@ -161,7 +161,7 @@ class ResearchDatabase:
                 ).fetchall()
             return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
         except sqlite3.Error as exc:
-            print(f"Could not load messages: {exc}")
+            logger.error("Could not load messages: %s", exc)
             return []
 
     def list_threads(self, user_id: int) -> list[dict[str, Any]]:
@@ -173,7 +173,7 @@ class ResearchDatabase:
                 ).fetchall()
             return [dict(row) for row in rows]
         except sqlite3.Error as exc:
-            print(f"Could not list threads: {exc}")
+            logger.error("Could not list threads: %s", exc)
             return []
 
     def thread_belongs_to_user(self, thread_id: int, user_id: int) -> bool:
@@ -185,7 +185,7 @@ class ResearchDatabase:
                 ).fetchone()
             return row is not None
         except sqlite3.Error as exc:
-            print(f"Could not verify thread ownership: {exc}")
+            logger.error("Could not verify thread ownership: %s", exc)
             return False
 
     def save_sources(self, thread_id: int, source_cards: list[dict]) -> bool:
@@ -210,7 +210,7 @@ class ResearchDatabase:
                     )
             return True
         except sqlite3.Error as exc:
-            print(f"Could not save sources: {exc}")
+            logger.error("Could not save sources: %s", exc)
             return False
 
     def save_report(
@@ -220,6 +220,9 @@ class ResearchDatabase:
         quality_score: int | None,
         confidence: str,
     ) -> int | None:
+        if not (final_answer or "").strip():
+            logger.error("Refusing to save empty report for thread %s", thread_id)
+            return None
         try:
             with self.connect() as db:
                 cursor = db.execute(
@@ -232,7 +235,7 @@ class ResearchDatabase:
                 )
                 return int(cursor.lastrowid)
         except sqlite3.Error as exc:
-            print(f"Could not save report: {exc}")
+            logger.error("Could not save report: %s", exc)
             return None
 
     def save_claim_checks(self, report_id: int, claims: list[dict]) -> bool:
@@ -255,5 +258,5 @@ class ResearchDatabase:
                     )
             return True
         except sqlite3.Error as exc:
-            print(f"Could not save claim checks: {exc}")
+            logger.error("Could not save claim checks: %s", exc)
             return False

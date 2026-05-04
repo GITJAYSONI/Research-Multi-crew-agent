@@ -1,0 +1,6 @@
+python api_server.py
+python .\web\serve.py
+
+streamlit run frontend/app.py
+
+

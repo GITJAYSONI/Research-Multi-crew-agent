@@ -22,12 +22,16 @@ writer_prompt = ChatPromptTemplate.from_messages(
             """You are an expert research writer. Generate a professional, highly structured research report.
 
 RULES:
-- Synthesize the provided scraped data and search summaries into a clear, useful report.
-- Use only the provided data. Do not hallucinate or add unsupported facts.
-- Cite sources inline using [1], [2], etc. based on the provided Sources list.
-- If evidence is thin, say so clearly and limit conclusions.
-- Every key claim must have a citation.
-- Before finalizing, check clarity, structure, repetition, source support, and usefulness.
+- Zero external knowledge: use ONLY the provided scraped data, exact snippets, and search summaries.
+- If a fact is not explicitly present in the provided research data, write exactly: "Data unavailable."
+- NEVER invent claims, numbers, statistics, dates, company names, prices, URLs, or references.
+- NEVER fabricate source links. Use only the provided numbered source list.
+- If verified evidence is weak, missing, or unclear, write exactly: "Data unavailable."
+- Every paragraph must be grounded in the source input.
+- Every key claim must have a valid inline citation like [1] that maps to the numbered source list.
+- If source text conflicts, explicitly mention uncertainty instead of choosing a side.
+- Use a professional, neutral tone. Prefer concise verified facts over broad speculation.
+- Do not include YouTube links, placeholder text, raw JSON, debug logs, or unrelated sections.
 
 OUTPUT STRUCTURE:
 Use this exact Markdown structure:
@@ -43,20 +47,23 @@ Short, direct overview of the answer.
 ## Deep Analysis
 Explain patterns, tradeoffs, causes, implications, and limits. Avoid generic filler.
 
-## Evidence Quality And Limits
+## Evidence & Sources
+List the cited sources with URL validation notes. Mark each as "Source Unverified" because live HTTP status is not checked here.
+
+## Limitations / Data Gaps
 State what the sources do and do not prove.
 
 ## Conclusion
 Practical, concise closing.
 
-## Sources
-Numbered source list matching the citations.
-
 DO NOT:
 - Write generic or vague content
 - Repeat the same ideas
 - Add filler text
-- Invent facts not found in the provided material""",
+- Invent facts not found in the provided material
+- Add decorative markdown, strange symbols, fake citations, or unsupported statistics
+IMPORTANT: Output raw Markdown directly. Do NOT wrap your response in triple backticks
+or a code block of any kind. Do not write ```markdown or ``` anywhere in your output.""",
         ),
         (
             "human",
@@ -95,12 +102,18 @@ refiner_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """You are an expert report refiner. Improve the report based on critic feedback.
+"""You are an expert report refiner. Improve the report based on critic feedback.
 RULES:
 - Fix all identified issues in the feedback.
 - Maintain the exact markdown structure required.
+- Zero external knowledge: use ONLY the original report and critic feedback.
 - Do NOT hallucinate facts.
-- Keep all valid citations [1], [2].""",
+- Keep all valid citations [1], [2].
+- Remove unsupported claims instead of rewriting them creatively.
+- If the critic says evidence is missing, replace that claim with "Data unavailable."
+- Do not introduce new URLs, statistics, or references.
+IMPORTANT: Output raw Markdown directly. Do NOT wrap your response in triple backticks
+or a code block of any kind. Do not write ```markdown or ``` anywhere in your output.""",
         ),
         (
             "human",
