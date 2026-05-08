@@ -30,6 +30,15 @@ REJECTED_DOMAIN_PARTS = (
     "clickserve.",
 )
 
+SEO_SPAM_PHRASES = (
+    "ultimate guide",
+    "complete guide",
+    "buy now",
+    "coupon",
+    "discount",
+    "sponsored",
+)
+
 # Merged with domains previously only in sources.py
 TRUSTED_DOMAIN_PARTS = (
     ".gov",
@@ -66,6 +75,20 @@ TRUSTED_DOMAIN_PARTS = (
 _SCRAPE_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=5)
 _MIN_EXTRACTED_TEXT = 200
 _BROWSER_MIN_EXTRACTED_TEXT = 1200
+_MIN_SIGNAL_TOKENS = 45
+_LOW_SIGNAL_TERMS = (
+    "menu",
+    "login",
+    "sign in",
+    "subscribe",
+    "cookie",
+    "privacy policy",
+    "terms of use",
+    "javascript",
+    "enable javascript",
+    "advertisement",
+    "newsletter",
+)
 
 # Browser-like User-Agent to reduce bot-blocking
 _USER_AGENT = (
@@ -105,20 +128,90 @@ def extract_clean_text(html: str) -> str:
     return soup.get_text(separator=" ", strip=True)
 
 
-def source_quality_score(result: dict) -> int:
+def is_low_signal_text(text: str) -> bool:
+    """Detect static shells, navigation dumps, and tiny snippets before they reach the writer."""
+    normalized = " ".join((text or "").lower().split())
+    if normalized.count(":") >= 4 and any(char.isdigit() for char in normalized):
+        return False
+    words = [word for word in normalized.split() if len(word) > 2]
+    has_data_signal = any(char.isdigit() for char in normalized) or any(
+        word in normalized
+        for word in (
+            "reported",
+            "announced",
+            "according",
+            "data",
+            "index",
+            "price",
+            "revenue",
+            "study",
+            "result",
+            "filing",
+        )
+    )
+    if len(normalized) < _MIN_EXTRACTED_TEXT:
+        return not (len(words) >= 25 and has_data_signal)
+    if len(set(words)) < _MIN_SIGNAL_TOKENS and not (
+        len(normalized) < 600 and len(words) >= 25 and has_data_signal
+    ):
+        return True
+    low_signal_hits = sum(1 for term in _LOW_SIGNAL_TERMS if term in normalized)
+    return low_signal_hits >= 4 and not has_data_signal
+
+
+def flatten_json_text(value: object, limit: int = 12000) -> str:
+    """Flatten API/XHR JSON into deterministic evidence text."""
+    parts: list[str] = []
+
+    def visit(item: object, key: str = "") -> None:
+        if len(" ".join(parts)) >= limit:
+            return
+        if isinstance(item, dict):
+            for child_key, child_value in item.items():
+                visit(child_value, str(child_key))
+        elif isinstance(item, list):
+            for child in item[:80]:
+                visit(child, key)
+        elif item is not None:
+            text = str(item).strip()
+            if text:
+                parts.append(f"{key}: {text}" if key else text)
+
+    visit(value)
+    return " ".join(parts)[:limit]
+
+
+def source_quality_score(result: dict, query: str = "") -> int:
     """Score a search result 0–100 based on domain trust and content availability."""
     url = (result.get("url") or "").lower()
     domain = urlparse(url).netloc.lower().replace("www.", "")
-    score = 50
+    title = (result.get("title") or "").lower()
+    summary = (result.get("summary") or result.get("content") or "").lower()
+    searchable_text = f"{title} {summary}"
+    query_terms = {
+        term
+        for term in split_query_terms(query)
+        if len(term) > 3 and not term.startswith(("http", "www"))
+    }
+    score = 35
     if not validate_url(url):
         return 0
     if any(part in domain for part in REJECTED_DOMAIN_PARTS):
-        score -= 45
+        return 0
+    if any(phrase in searchable_text for phrase in SEO_SPAM_PHRASES):
+        score -= 20
     if any(part in domain for part in TRUSTED_DOMAIN_PARTS) or domain.endswith((".gov", ".edu")):
-        score += 40
+        score += 35
     if result.get("content") or result.get("summary"):
-        score += 10
+        score += 15
+    if query_terms:
+        overlap = sum(1 for term in query_terms if term in searchable_text)
+        score += min(15, overlap * 5)
     return max(0, min(100, score))
+
+
+def split_query_terms(query: str) -> list[str]:
+    return [part.strip(".,:;!?()[]{}\"'").lower() for part in (query or "").split()]
 
 
 def perform_python_search(query: str, max_results: int = 5) -> list[dict]:
@@ -143,8 +236,8 @@ def perform_python_search(query: str, max_results: int = 5) -> list[dict]:
             "url": result.get("url", "N/A"),
             "summary": result.get("content", "N/A"),
         }
-        score = source_quality_score(source)
-        if score < 40:
+        score = source_quality_score(source, query)
+        if score < 50:
             continue
         domain = urlparse(source["url"]).netloc.lower().replace("www.", "")
         source["quality_score"] = score
@@ -194,19 +287,25 @@ async def fetch_url_text(session: aiohttp.ClientSession, url: str) -> str:
 
             # Respect content-type — only parse HTML pages
             content_type = response.headers.get("Content-Type", "")
+            if "json" in content_type:
+                payload = await response.json(content_type=None)
+                text = flatten_json_text(payload)
+                if is_low_signal_text(text):
+                    return ""
+                return f"Source: {final_url}\nOriginal URL: {url}\nContent:\n{text[:8000]}\n"
             if "text/html" not in content_type and "text/plain" not in content_type:
                 logger.debug("Skipping non-HTML content at %s (%s)", url, content_type)
                 return ""
 
             html = await response.text(errors="replace")
             text = extract_clean_text(html)
-            if len(text) < _BROWSER_MIN_EXTRACTED_TEXT:
+            if len(text) < _BROWSER_MIN_EXTRACTED_TEXT or is_low_signal_text(text):
                 browser_text = await fetch_url_text_with_browser(final_url)
                 if browser_text:
                     return browser_text
 
             text = text[:8000]
-            if len(text) < _MIN_EXTRACTED_TEXT:
+            if is_low_signal_text(text):
                 logger.debug("Too little text extracted from %s (%d chars)", url, len(text))
                 return ""
 
@@ -238,8 +337,34 @@ async def fetch_url_text_with_browser(url: str) -> str:
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
-            page = await browser.new_page(user_agent=_USER_AGENT)
+            page = await browser.new_page(
+                user_agent=_USER_AGENT,
+                extra_http_headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            xhr_payloads: list[str] = []
+            xhr_tasks: list[asyncio.Task] = []
+
+            async def capture_response(response) -> None:
+                try:
+                    content_type = response.headers.get("content-type", "")
+                    if "json" not in content_type:
+                        return
+                    text = flatten_json_text(await response.json())
+                    if not is_low_signal_text(text):
+                        xhr_payloads.append(f"XHR: {response.url}\n{text[:6000]}")
+                except Exception:
+                    return
+
+            def schedule_capture(response) -> None:
+                xhr_tasks.append(asyncio.create_task(capture_response(response)))
+
+            page.on("response", schedule_capture)
             response = await page.goto(url, wait_until="networkidle", timeout=20000)
+            if xhr_tasks:
+                await asyncio.gather(*xhr_tasks, return_exceptions=True)
             final_url = page.url
             if response and response.status >= 400:
                 logger.debug("Browser scrape got status %s for %s", response.status, url)
@@ -247,8 +372,11 @@ async def fetch_url_text_with_browser(url: str) -> str:
             if not validate_url(final_url):
                 logger.debug("Browser redirect landed on invalid URL: %s -> %s", url, final_url)
                 return ""
+            if xhr_payloads:
+                text = "\n".join(xhr_payloads)[:12000]
+                return f"Source: {final_url}\nOriginal URL: {url}\nContent:\n{text}\n"
             text = extract_clean_text(await page.content())[:12000]
-            if len(text) < _MIN_EXTRACTED_TEXT:
+            if is_low_signal_text(text):
                 return ""
             return f"Source: {final_url}\nOriginal URL: {url}\nContent:\n{text}\n"
     except Exception as exc:

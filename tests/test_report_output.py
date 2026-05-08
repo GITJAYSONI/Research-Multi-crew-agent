@@ -7,6 +7,7 @@ from chat_service import ResearchChatService
 from database.database import ResearchDatabase
 from memory import SessionMemory
 from sources import build_reader_output, build_source_cards
+from tools import flatten_json_text, source_quality_score
 
 
 class ReportOutputTests(unittest.TestCase):
@@ -30,7 +31,7 @@ class ReportOutputTests(unittest.TestCase):
         chat_service.run_research_pipeline = fake_pipeline
         try:
             db = ResearchDatabase(":memory:")
-            user_id = db.create_user("test@example.com")
+            user_id = db.create_user()
             service = ResearchChatService(
                 db=db,
                 memory=SessionMemory(max_recent_messages=4),
@@ -92,7 +93,7 @@ class ReportOutputTests(unittest.TestCase):
         chat_service.run_research_pipeline = fake_pipeline
         try:
             db = ResearchDatabase(":memory:")
-            user_id = db.create_user("empty@example.com")
+            user_id = db.create_user()
             service = ResearchChatService(
                 db=db,
                 memory=SessionMemory(max_recent_messages=4),
@@ -109,7 +110,7 @@ class ReportOutputTests(unittest.TestCase):
 
     def test_database_rejects_empty_messages_and_reports(self):
         db = ResearchDatabase(":memory:")
-        user_id = db.create_user("storage@example.com")
+        user_id = db.create_user()
         thread_id = db.create_thread(user_id, "storage")
 
         self.assertFalse(db.save_message(thread_id, "assistant", "   "))
@@ -273,6 +274,97 @@ class ReportOutputTests(unittest.TestCase):
         finally:
             pipeline.evaluate_report_quality = original_evaluate
             pipeline.perform_python_search = original_search
+
+    def test_reader_does_not_treat_search_summary_as_scraped_evidence(self):
+        extracted = build_reader_output(
+            [
+                {
+                    "title": "Search Only",
+                    "url": "https://example.com/search-only",
+                    "summary": "A short search snippet should not be treated as verified evidence.",
+                }
+            ],
+            scraped_content="",
+        )
+
+        self.assertFalse(extracted[0]["content_available"])
+        self.assertEqual(extracted[0]["extraction_status"], "missing_or_low_signal")
+        self.assertEqual(pipeline.usable_evidence(extracted), [])
+
+    def test_reader_allows_substantial_search_excerpt_as_limited_evidence(self):
+        summary = (
+            "Company ABC reported revenue of 10.2 billion for the quarter, with operating "
+            "margin improving to 18 percent and management citing stronger enterprise demand. "
+            "The filing also listed cash flow, debt levels, and regional performance details."
+        )
+        extracted = build_reader_output(
+            [{"title": "Search Excerpt", "url": "https://example.com/report", "summary": summary}],
+            scraped_content="",
+        )
+
+        self.assertTrue(extracted[0]["content_available"])
+        self.assertEqual(extracted[0]["extraction_status"], "search_excerpt")
+        self.assertTrue(pipeline.usable_evidence(extracted))
+
+    def test_reader_rejects_navigation_shell_content(self):
+        nav_text = (
+            "Source: https://example.com/shell\n"
+            "Content:\n"
+            + " ".join(
+                [
+                    "menu login sign in subscribe cookie privacy policy terms of use "
+                    "javascript enable javascript advertisement newsletter"
+                ]
+                * 40
+            )
+        )
+        extracted = build_reader_output(
+            [{"title": "Shell", "url": "https://example.com/shell", "summary": "Shell page"}],
+            nav_text,
+        )
+
+        self.assertFalse(extracted[0]["content_available"])
+
+    def test_json_payload_becomes_usable_structured_evidence(self):
+        text = flatten_json_text(
+            {
+                "data": [
+                    {
+                        "symbol": "ABC",
+                        "open": 101.4,
+                        "lastPrice": 105.2,
+                        "pChange": 2.1,
+                        "volume": 1250000,
+                    }
+                ]
+            }
+        )
+        scraped = f"Source: https://example.com/api/data\nContent:\n{text}"
+        extracted = build_reader_output(
+            [
+                {
+                    "title": "API data",
+                    "url": "https://example.com/api/data",
+                    "summary": "Structured market data",
+                }
+            ],
+            scraped,
+        )
+
+        self.assertTrue(extracted[0]["content_available"])
+        self.assertTrue(pipeline.usable_evidence(extracted))
+
+    def test_search_quality_rejects_spam_source(self):
+        score = source_quality_score(
+            {
+                "title": "Ultimate Guide With Coupon",
+                "url": "https://medium.com/example/ultimate-guide",
+                "summary": "Sponsored coupon content.",
+            },
+            query="verified market data",
+        )
+
+        self.assertLess(score, 50)
 
 
 if __name__ == "__main__":

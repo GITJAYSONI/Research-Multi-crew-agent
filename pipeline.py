@@ -37,7 +37,6 @@ MODE_SEARCH_HINTS = {
     "patents": " patent database USPTO WIPO Google Patents filing",
 }
 
-
 class AgentState(TypedDict, total=False):
     query: str
     topic: str
@@ -144,9 +143,7 @@ class FallbackStateGraph:
         return state
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # AGENT NODES
-# ══════════════════════════════════════════════════════════════════════════════
 
 def search_agent(state: AgentState) -> AgentState:
     log_agent_start("Search Agent", state)
@@ -250,7 +247,7 @@ def writer_agent(state: AgentState) -> AgentState:
 
     try:
         extracted_data = state.get("extracted_data", [])
-        usable = [d for d in extracted_data if d.get("content_available")]
+        usable = usable_evidence(extracted_data)
         if not usable:
             report = fallback_answer(state)
             state["final_answer"] = report
@@ -267,7 +264,7 @@ def writer_agent(state: AgentState) -> AgentState:
         report = writer_chain.invoke(
             {
                 "topic": writer_topic(state),
-                "research_data": format_evidence_for_writer(extracted_data),
+                "research_data": format_evidence_for_writer(usable),
                 "sources": sources_formatted,
             }
         )
@@ -443,6 +440,21 @@ def summarize_scraped_content(scraped_blob: str) -> list[dict]:
 
         cleaned.append({"url": source_url, "content": summary})
     return cleaned
+
+
+def usable_evidence(extracted_data: list[dict]) -> list[dict]:
+    """Return evidence that is strong enough for report generation."""
+    usable = []
+    for item in extracted_data or []:
+        if not item.get("content_available"):
+            continue
+        excerpt = (item.get("evidence_excerpt") or "").strip()
+        snippets = [snippet for snippet in item.get("snippets", []) if snippet.strip()]
+        min_excerpt_length = 180 if item.get("extraction_status") == "search_excerpt" else 300
+        if len(excerpt) < min_excerpt_length and not snippets:
+            continue
+        usable.append(item)
+    return usable
 
 
 def scraped_content_to_blob(scraped_content: list[dict]) -> str:

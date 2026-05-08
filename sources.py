@@ -2,7 +2,7 @@ import re
 from urllib.parse import urlparse
 
 from text_utils import split_sentences, tokens
-from tools import TRUSTED_DOMAIN_PARTS, validate_url
+from tools import TRUSTED_DOMAIN_PARTS, is_low_signal_text, validate_url
 
 
 def domain(url: str) -> str:
@@ -77,12 +77,14 @@ def build_reader_output(sources: list[dict], scraped_content: str) -> list[dict]
         safe_url = raw_url if raw_url.startswith("http") else f"https://{raw_url.lstrip('/')}"
         url = safe_url
         matching_chunk = matching_scraped_chunk(url, chunks)
-        content = matching_chunk or source.get("summary", "")
+        summary = source.get("summary", "No summary available.")
+        content = matching_chunk or source_excerpt_fallback(source)
         clean_content = re.sub(r"\s+", " ", content).strip()
 
-        summary = source.get("summary", "No summary available.")
         key_points = [summary] if summary and summary != "N/A" else []
-        snippets = best_snippets(clean_content, summary)
+        extraction_status = "scraped" if matching_chunk else "search_excerpt"
+        content_available = bool(clean_content) and not is_low_signal_text(clean_content)
+        snippets = best_snippets(clean_content, summary) if content_available else []
         trust = trust_score(url, source.get("title", ""))
 
         extracted.append(
@@ -98,12 +100,21 @@ def build_reader_output(sources: list[dict], scraped_content: str) -> list[dict]
                 "snippets": snippets,
                 "primary_snippet": snippets[0] if snippets else "",
                 "evidence_excerpt": clean_content[:1200],
-                "content_available": bool(clean_content)
-                and not clean_content.lower().startswith("could not scrape"),
+                "content_available": content_available,
+                "extraction_status": extraction_status if content_available else "missing_or_low_signal",
             }
         )
 
     return extracted
+
+
+def source_excerpt_fallback(source: dict) -> str:
+    """Use search-provider excerpts only when they contain enough substance to cite as limited evidence."""
+    text = source.get("snippet") or source.get("summary") or ""
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) < 180:
+        return ""
+    return text
 
 
 def matching_scraped_chunk(url: str, chunks: list[str]) -> str:

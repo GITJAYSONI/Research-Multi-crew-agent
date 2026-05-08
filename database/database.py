@@ -35,7 +35,6 @@ class ResearchDatabase:
                     """
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        email TEXT UNIQUE,
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
                     );
 
@@ -100,17 +99,11 @@ class ResearchDatabase:
         except sqlite3.Error as exc:
             logger.error("Database initialization failed: %s", exc)
 
-    def create_user(self, email: str) -> int | None:
+    def create_user(self) -> int | None:
         try:
             with self.connect() as db:
-                cursor = db.execute(
-                    "INSERT OR IGNORE INTO users (email) VALUES (?)",
-                    (email,),
-                )
-                if cursor.lastrowid:
-                    return int(cursor.lastrowid)
-                row = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
-                return int(row["id"]) if row else None
+                cursor = db.execute("INSERT INTO users DEFAULT VALUES")
+                return int(cursor.lastrowid)
         except sqlite3.Error as exc:
             logger.error("Could not create user: %s", exc)
             return None

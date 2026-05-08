@@ -20,7 +20,6 @@ except ImportError as exc:
 
 
 PAGE_TITLE = "Research Intelligence System"
-LOCAL_USER_EMAIL = "local-user@research-app.local"
 
 
 def configure_page() -> None:
@@ -163,7 +162,7 @@ def init_state() -> None:
         st.session_state.memory = SessionMemory(max_recent_messages=4)
 
     if st.session_state.current_user_id is None:
-        st.session_state.current_user_id = get_database().create_user(LOCAL_USER_EMAIL)
+        st.session_state.current_user_id = get_database().create_user()
 
 
 @st.cache_resource

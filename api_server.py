@@ -20,11 +20,15 @@ load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
+
+class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 ROOT_DIR = Path(__file__).resolve().parent
 DB_PATH = ROOT_DIR / "database" / "research_memory.db"
 
 # ── Read from environment so nothing is hardcoded in source ───────────────────
-LOCAL_USER_EMAIL = os.getenv("LOCAL_USER_EMAIL", "local-user@research-app.local")
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000")
 
 # ── Simple per-IP rate limiter (10 requests per 60 seconds) ───────────────────
@@ -80,7 +84,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         db = ResearchDatabase(DB_PATH)
-        user_id = int(query.get("user_id", [db.create_user(LOCAL_USER_EMAIL) or 1])[0])
+        user_id = int(query.get("user_id", [db.create_user() or 1])[0])
 
         if parsed.path == "/api/threads":
             self._send_json({"threads": db.list_threads(user_id), "user_id": user_id})
@@ -146,7 +150,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
 
             db = ResearchDatabase(DB_PATH)
-            user_id = payload.get("user_id") or db.create_user(LOCAL_USER_EMAIL)
+            user_id = payload.get("user_id") or db.create_user()
             memory = SessionMemory(max_recent_messages=4)
             service = ResearchChatService(db=db, memory=memory)
 
@@ -176,9 +180,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, status=500)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # REPORT BUILDER
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def build_structured_report(result: dict) -> dict:
     """Structured components consumed by the React frontend."""
@@ -246,9 +249,9 @@ def build_structured_report(result: dict) -> dict:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # HELPER FUNCTIONS
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _extract_key_findings(report: str) -> list[str]:
     section = _extract_section(report, "Key Findings")
@@ -375,6 +378,11 @@ def escape_pdf(text: str) -> str:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     port = int(os.environ.get("PORT", 8000))
-    server = ThreadingHTTPServer(("0.0.0.0", port), ApiHandler)
-    logger.info("Backend API running at http://0.0.0.0:%d", port)
-    server.serve_forever()
+    server = ReusableThreadingHTTPServer(("0.0.0.0", port), ApiHandler)
+    try:
+        logger.info("Backend API running at http://0.0.0.0:%d", port)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Backend API stopped.")
+    finally:
+        server.server_close()
